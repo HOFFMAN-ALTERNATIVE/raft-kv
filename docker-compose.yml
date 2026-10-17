@@ -1,5 +1,6 @@
 # Three-node raft-kv cluster. Every node serves the client API and Raft RPCs
-# on :7001; the host sees them on 7001/7002/7003.
+# on :7001; the host sees them on 7001/7002/7003, and followers redirect
+# clients to those host ports (RAFTKV_CLIENT_URLS).
 #
 #   docker compose up -d --build
 #   curl -L -X PUT localhost:7001/v1/kv/hello -d world
@@ -24,6 +25,7 @@ services:
     environment:
       RAFTKV_ID: n1
       RAFTKV_PEERS: n1=http://n1:7001,n2=http://n2:7001,n3=http://n3:7001
+      RAFTKV_CLIENT_URLS: &clients n1=http://127.0.0.1:7001,n2=http://127.0.0.1:7002,n3=http://127.0.0.1:7003
     ports: ["127.0.0.1:7001:7001"]
     volumes: ["n1-data:/data"]
   n2:
@@ -32,6 +34,7 @@ services:
     environment:
       RAFTKV_ID: n2
       RAFTKV_PEERS: n1=http://n1:7001,n2=http://n2:7001,n3=http://n3:7001
+      RAFTKV_CLIENT_URLS: *clients
     ports: ["127.0.0.1:7002:7001"]
     volumes: ["n2-data:/data"]
   n3:
@@ -40,6 +43,7 @@ services:
     environment:
       RAFTKV_ID: n3
       RAFTKV_PEERS: n1=http://n1:7001,n2=http://n2:7001,n3=http://n3:7001
+      RAFTKV_CLIENT_URLS: *clients
     ports: ["127.0.0.1:7003:7001"]
     volumes: ["n3-data:/data"]
 

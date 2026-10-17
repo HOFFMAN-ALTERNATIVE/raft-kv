@@ -187,7 +187,8 @@ instead of applying it twice. Sessions are part of snapshots.
 | Flag | Env | Default |
 |---|---|---|
 | `-id` | `RAFTKV_ID` | — |
-| `-peers` | `RAFTKV_PEERS` | — (`id=url,…`, includes self) |
+| `-peers` | `RAFTKV_PEERS` | — (`id=url,…`, includes self; used for Raft RPCs) |
+| `-client-urls` | `RAFTKV_CLIENT_URLS` | `-peers` (`id=url,…` advertised in 307 redirects, for NAT / port mapping) |
 | `-listen` | `RAFTKV_LISTEN` | `:7001` |
 | `-data` | `RAFTKV_DATA` | `./data` |
 | `-election-timeout` | | `500ms` (randomised to [T, 2T)) |

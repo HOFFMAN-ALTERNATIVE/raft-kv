@@ -2,6 +2,10 @@
 //
 //	raftkv -id n1 -listen :7001 -data /var/lib/raftkv \
 //	  -peers n1=http://n1:7001,n2=http://n2:7001,n3=http://n3:7001
+//
+// -peers are the addresses nodes use to reach each other; -client-urls
+// (optional) are the addresses clients should be redirected to, for when
+// the two differ (NAT, docker port mapping, load balancers).
 package main
 
 import (
@@ -48,14 +52,15 @@ func parsePeers(s string) (map[string]string, []string, error) {
 
 func run() error {
 	var (
-		id        = flag.String("id", os.Getenv("RAFTKV_ID"), "node id (must appear in -peers)")
-		listen    = flag.String("listen", envOr("RAFTKV_LISTEN", ":7001"), "listen address for client API and raft RPCs")
-		peersFlag = flag.String("peers", os.Getenv("RAFTKV_PEERS"), "comma-separated id=url list of all members")
-		dataDir   = flag.String("data", envOr("RAFTKV_DATA", "./data"), "data directory")
-		election  = flag.Duration("election-timeout", 500*time.Millisecond, "minimum election timeout")
-		heartbeat = flag.Duration("heartbeat", 100*time.Millisecond, "heartbeat interval")
-		snapAt    = flag.Int("snapshot-threshold", 1000, "entries between snapshots (0 disables)")
-		logLevel  = flag.String("log-level", "info", "debug|info|warn|error")
+		id         = flag.String("id", os.Getenv("RAFTKV_ID"), "node id (must appear in -peers)")
+		listen     = flag.String("listen", envOr("RAFTKV_LISTEN", ":7001"), "listen address for client API and raft RPCs")
+		peersFlag  = flag.String("peers", os.Getenv("RAFTKV_PEERS"), "comma-separated id=url list of all members")
+		clientFlag = flag.String("client-urls", os.Getenv("RAFTKV_CLIENT_URLS"), "id=url list advertised to clients in leader redirects (default: -peers)")
+		dataDir    = flag.String("data", envOr("RAFTKV_DATA", "./data"), "data directory")
+		election   = flag.Duration("election-timeout", 500*time.Millisecond, "minimum election timeout")
+		heartbeat  = flag.Duration("heartbeat", 100*time.Millisecond, "heartbeat interval")
+		snapAt     = flag.Int("snapshot-threshold", 1000, "entries between snapshots (0 disables)")
+		logLevel   = flag.String("log-level", "info", "debug|info|warn|error")
 	)
 	flag.Parse()
 
@@ -67,6 +72,12 @@ func run() error {
 	peers, ids, err := parsePeers(*peersFlag)
 	if err != nil {
 		return err
+	}
+	clientURLs := peers
+	if *clientFlag != "" {
+		if clientURLs, _, err = parsePeers(*clientFlag); err != nil {
+			return fmt.Errorf("-client-urls: %w", err)
+		}
 	}
 	store, err := raft.NewFileStorage(*dataDir)
 	if err != nil {
@@ -84,7 +95,7 @@ func run() error {
 
 	mux := http.NewServeMux()
 	httptransport.Register(mux, node)
-	kv.NewServer(&kv.Store{Node: node, FSM: fsm}, peers).Register(mux)
+	kv.NewServer(&kv.Store{Node: node, FSM: fsm}, clientURLs).Register(mux)
 	srv := &http.Server{Addr: *listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
