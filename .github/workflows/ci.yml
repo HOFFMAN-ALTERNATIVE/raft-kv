@@ -1,0 +1,66 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: golangci-lint · go vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.24"
+      - run: go vet ./...
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64.8
+
+  test:
+    name: consensus + linearizability tests (race) · go ${{ matrix.go }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ["1.23", "1.24", "stable"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go }}
+      - run: go build ./...
+      - run: go test -race -count=1 -shuffle=on -coverpkg=./... -coverprofile=coverage.out -covermode=atomic ./...
+      - run: go tool cover -func=coverage.out | tail -1
+      - name: benchmark (smoke)
+        run: go test -run xxx -bench . -benchtime 500x ./raft/
+
+  vuln:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  chaos:
+    name: 3-node docker compose cluster · kill leader + network partition
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: docker compose up -d --build --wait
+      - run: ./scripts/chaos.sh
+      - if: always()
+        run: docker compose logs --no-color | tail -200
+      - if: always()
+        run: docker compose down -v

@@ -1,0 +1,49 @@
+# Three-node raft-kv cluster. Every node serves the client API and Raft RPCs
+# on :7001; the host sees them on 7001/7002/7003.
+#
+#   docker compose up -d --build
+#   curl -L -X PUT localhost:7001/v1/kv/hello -d world
+#   curl -s localhost:7002/v1/kv/hello
+#   ./scripts/chaos.sh        # kill the leader, partition a follower, verify
+name: raft-kv
+
+x-node: &node
+  build: .
+  image: raft-kv:local
+  restart: unless-stopped
+  # Small threshold so the demo exercises snapshots + InstallSnapshot.
+  command: ["-election-timeout", "400ms", "-heartbeat", "80ms", "-snapshot-threshold", "50"]
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
+services:
+  n1:
+    <<: *node
+    hostname: n1
+    environment:
+      RAFTKV_ID: n1
+      RAFTKV_PEERS: n1=http://n1:7001,n2=http://n2:7001,n3=http://n3:7001
+    ports: ["127.0.0.1:7001:7001"]
+    volumes: ["n1-data:/data"]
+  n2:
+    <<: *node
+    hostname: n2
+    environment:
+      RAFTKV_ID: n2
+      RAFTKV_PEERS: n1=http://n1:7001,n2=http://n2:7001,n3=http://n3:7001
+    ports: ["127.0.0.1:7002:7001"]
+    volumes: ["n2-data:/data"]
+  n3:
+    <<: *node
+    hostname: n3
+    environment:
+      RAFTKV_ID: n3
+      RAFTKV_PEERS: n1=http://n1:7001,n2=http://n2:7001,n3=http://n3:7001
+    ports: ["127.0.0.1:7003:7001"]
+    volumes: ["n3-data:/data"]
+
+volumes:
+  n1-data:
+  n2-data:
+  n3-data:

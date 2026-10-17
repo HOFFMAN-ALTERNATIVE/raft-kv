@@ -1,0 +1,31 @@
+run:
+  timeout: 5m
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gofmt
+    - goimports
+    - misspell
+    - revive
+    - gosec
+    - bodyclose
+    - errorlint
+    - unconvert
+    - prealloc
+linters-settings:
+  revive:
+    rules:
+      - name: exported
+      - name: var-naming
+      - name: indent-error-flow
+      - name: error-return
+      - name: unused-parameter
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters: [gosec, errcheck, bodyclose, prealloc]
