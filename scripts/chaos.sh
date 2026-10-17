@@ -13,7 +13,7 @@ NET="raft-kv_default"
 log() { printf '\033[36m[chaos]\033[0m %s\n' "$*"; }
 die() { printf '\033[31m[chaos] FAIL:\033[0m %s\n' "$*"; docker compose logs --tail=40; exit 1; }
 
-port_of() { for i in "${!NODES[@]}"; do [[ ${NODES[$i]} == "$1" ]] && echo "${PORTS[$i]}"; done; }
+port_of() { for i in "${!NODES[@]}"; do if [[ ${NODES[$i]} == "$1" ]]; then echo "${PORTS[$i]}"; fi; done; }
 
 leader() { # prints the node id that reports role=leader, excluding $1
   for n in "${NODES[@]}"; do
