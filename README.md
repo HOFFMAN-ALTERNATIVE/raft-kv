@@ -268,6 +268,14 @@ make lint
 - D. Ongaro — *Consensus: Bridging Theory and Practice* (PhD thesis, 2014): Pre-Vote §9.6, ReadIndex §6.4, client sessions §6.3
 - A. Athalye — *porcupine*, a fast linearizability checker
 
+## Container image
+
+Multi-arch (amd64/arm64) images are published to GitHub Container Registry on every release:
+
+```bash
+docker pull ghcr.io/hoffman-alternative/raft-kv:latest
+```
+
 ## License
 
 [MIT](LICENSE) © 2026 Herman Hoffman
