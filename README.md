@@ -6,12 +6,15 @@
 ![Linearizable](https://img.shields.io/badge/checked-linearizable%20(porcupine)-2EA44F)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-A **replicated, linearizable key-value store** built on a **from-scratch
-implementation of the Raft consensus algorithm** in Go — no `hashicorp/raft`,
-no `etcd/raft`. One dependency, and it's only used by the tests
-(`porcupine`, a linearizability checker).
+A replicated key-value store whose reads and writes stay linearizable while nodes crash and the network partitions. The consensus layer is Raft written from scratch in Go: no `hashicorp/raft`, no `etcd/raft`, and the only dependency is `porcupine`, used by the tests to check linearizability.
 
-It goes beyond the textbook Figure 2 with the pieces a real deployment needs:
+What is checked, not claimed:
+
+- 6 clients run about 900 get/put/CAS operations against 5 nodes under rolling partitions on a lossy network, and porcupine accepts the full history. Switching reads to stale makes it reject the history within one run.
+- In CI a real 3-container cluster loses its leader to SIGKILL and a follower to `docker network disconnect`; no acknowledged write is lost.
+- One commit through 3 in-memory nodes takes 0.22 ms (`BenchmarkPropose3Nodes`, 8 vCPU VM, Go 1.27). That measures the algorithm, not disk or network.
+
+It covers the parts of the Raft thesis a real deployment needs beyond Figure 2:
 
 | Feature | Why it matters |
 |---|---|
@@ -19,7 +22,7 @@ It goes beyond the textbook Figure 2 with the pieces a real deployment needs:
 | **Pre-Vote** (thesis §9.6) | a node coming back from a partition can't depose a healthy leader by inflating its term |
 | **CheckQuorum** | a leader cut off from the majority steps down on its own instead of silently accepting writes it can never commit |
 | **Log replication** with fast conflict backtracking | followers return `(ConflictTerm, ConflictIndex)`, so repairing a divergent log costs one round trip per term, not per entry |
-| **ReadIndex linearizable reads** (thesis §6.4) | reads don't go through the log, yet can never return stale data — proven by the checker below |
+| **ReadIndex linearizable reads** (thesis §6.4) | reads don't go through the log, yet never return stale data; the checker below verifies it |
 | **Snapshots + log compaction + InstallSnapshot** | bounded log size; lagging or new followers catch up from a snapshot |
 | **Exactly-once client sessions** (thesis §6.3) | a retried write after a leader crash is applied at most once |
 | **Crash-safe file storage** | write-temp → fsync → rename → fsync(dir) |
@@ -49,10 +52,10 @@ flowchart LR
 Inside `raft.Node` everything is guarded by one mutex; three kinds of
 goroutines do the work:
 
-- **ticker** — fires elections (Pre-Vote first) and runs CheckQuorum on the leader;
-- **one replicator per peer** — heartbeats on a timer, ships entries or a
+- **ticker** fires elections (Pre-Vote first) and runs CheckQuorum on the leader;
+- **one replicator per peer** sends heartbeats on a timer, ships entries or a
   snapshot as soon as it's triggered, one RPC in flight per peer;
-- **applier** — the *only* goroutine that touches the state machine: applies
+- **applier** is the *only* goroutine that touches the state machine. It applies
   committed entries in order, restores installed snapshots, takes local
   snapshots. That single-writer rule is what lets `Snapshot()` run without
   stopping the world.
@@ -115,12 +118,12 @@ stateDiagram-v2
 
 ## How it's tested
 
-Correctness of a consensus implementation is only as good as its tests, so
-most of the code here *is* tests.
+A consensus implementation is only as trustworthy as its tests, so most of
+the code here is tests.
 
 | Test | What it proves |
 |---|---|
-| **Global apply checker** (every raft test) | the harness records every `(index, command)` any node applies and fails the moment two nodes disagree — *State Machine Safety* is checked continuously, not just at the end |
+| **Global apply checker** (every raft test) | the harness records every `(index, command)` any node applies and fails the moment two nodes disagree, so *State Machine Safety* is checked continuously, not just at the end |
 | `TestInitialElection` | one leader, no spurious elections when nothing fails |
 | `TestReElection` | failover on leader loss; isolated old leader steps down (CheckQuorum); rejoin doesn't change term (Pre-Vote); no leader without quorum |
 | `TestPreVoteIsolatedFollowerDoesNotInflateTerm` | an isolated node sits through 10 election timeouts with an unchanged term |
@@ -134,7 +137,7 @@ most of the code here *is* tests.
 | `TestHTTPAPIEndToEnd` | 3 real HTTP servers: redirects, CAS 409, deletes, sessions, snapshots, metrics |
 | **CI `chaos` job** | real 3-container cluster: SIGKILL the leader, check no acked write is lost, restart it, `docker network disconnect` a follower, keep committing on the majority, heal, verify catch-up |
 
-The checker isn't decorative: switching the test's reads from `Linearizable`
+The checker has teeth: switching the test's reads from `Linearizable`
 to `Stale` makes porcupine report the history as **Illegal** within one run.
 
 Everything runs with `-race` on Go 1.23, 1.24 and stable in CI.
@@ -167,7 +170,7 @@ for i in 1 2 3; do ./bin/raftkv -id n$i -listen 127.0.0.1:700$i -peers $P -data 
 | `GET /v1/kv/{key}` | linearizable read (ReadIndex). `?consistency=stale` serves local state on any node. `404` if absent |
 | `PUT /v1/kv/{key}` | body = value (≤ 1 MiB) |
 | `DELETE /v1/kv/{key}` | `404` if absent |
-| `POST /v1/cas/{key}` | `{"expected": "old" \| null, "value": "new"}` — `null` means "create if absent"; `409` on mismatch |
+| `POST /v1/cas/{key}` | `{"expected": "old" \| null, "value": "new"}`; `null` means "create if absent"; `409` on mismatch |
 | `GET /v1/keys?prefix=&limit=` | sorted keys (local state) |
 | `GET /v1/status` | role, term, leader, commit/applied/snapshot indexes, counters |
 | `GET /metrics` | Prometheus text format (`raft_term`, `raft_is_leader`, `raft_commit_index`, …) |
@@ -179,7 +182,7 @@ body intact); with no leader the answer is `503` + `Retry-After`.
 
 **Exactly-once retries:** send `X-Client-ID: <uuid>` and a monotonically
 increasing `X-Request-Seq`. If a write times out (`503 {"outcome":"unknown"}`),
-retry it with the *same* seq — the state machine returns the original result
+retry it with the *same* seq and the state machine returns the original result
 instead of applying it twice. Sessions are part of snapshots.
 
 ## Configuration
@@ -198,14 +201,16 @@ instead of applying it twice. Sessions are part of snapshots.
 
 ## Design decisions
 
+The three with the most consequences are written up as ADRs: [0001 ReadIndex instead of leases or log reads](docs/adr/0001-readindex-for-linearizable-reads.md), [0002 one mutex instead of an actor loop](docs/adr/0002-single-mutex-node.md), [0003 JSON over HTTP for peer RPCs](docs/adr/0003-json-over-http-transport.md).
+
 - **From scratch, library-shaped.** `raft` knows nothing about keys or HTTP:
   it takes a `Transport`, a `Storage` and a `StateMachine`. The KV store is
   ~430 lines on top. The same core runs over HTTP in production and over the
   in-memory fault-injection network in tests.
 - **One mutex, not channels everywhere.** Raft's state is a single tightly
   coupled invariant set (term, vote, log, commit index). A single lock with
-  condition variables is easier to reason about — and to verify with `-race`
-  — than an actor loop plus a dozen channels. Blocking work (RPCs, FSM
+  condition variables is easier to reason about, and to verify with `-race`,
+  than an actor loop plus a dozen channels. Blocking work (RPCs, FSM
   apply, fsync of snapshots) always happens with the lock released.
 - **Pre-Vote + CheckQuorum together.** Pre-Vote alone stops term inflation
   but a partitioned leader would keep believing it leads; CheckQuorum makes
@@ -215,7 +220,7 @@ instead of applying it twice. Sessions are part of snapshots.
   disk write per read; leader leases depend on bounded clock drift. ReadIndex
   costs one heartbeat round and relies on nothing but quorum. Heartbeats
   carry a sequence number, so one round can confirm many concurrent reads.
-- **Commit only current-term entries by counting** (§5.4.2) — earlier-term
+- **Commit only current-term entries by counting** (§5.4.2). Earlier-term
   entries are committed indirectly. Every leader appends a no-op on election
   so this happens immediately and ReadIndex knows the true commit index.
 - **"Outcome unknown" is a first-class error.** `Propose` returns
@@ -237,13 +242,22 @@ instead of applying it twice. Sessions are part of snapshots.
 Kept out deliberately to keep the core auditable; each would slot in behind
 the existing interfaces:
 
-- **Static membership** — no joint consensus / single-server changes yet.
-- **Whole-state persistence** — the log is re-encoded on each change; it's
+- **Static membership.** No joint consensus / single-server changes yet.
+- **Whole-state persistence.** The log is re-encoded on each change; it's
   bounded by the snapshot threshold, but a segmented WAL with group commit
   would be the production storage engine.
-- **One RPC in flight per peer**, snapshots sent in a single message — no
+- **One RPC in flight per peer**, snapshots sent in a single message. No
   pipelining or chunked/streamed InstallSnapshot.
-- No TLS/auth on the peer port — run it on a private network or behind mTLS.
+- No TLS/auth on the peer port. Run it on a private network or behind mTLS.
+
+## Operations
+
+- `/healthz` is liveness; `/readyz` turns ready once a leader is known. The image's Docker `HEALTHCHECK` runs `raftkv healthcheck`, so compose `--wait` blocks until every node answers.
+- SIGTERM drains HTTP for up to 5 s, then stops the Raft node. State is fsynced on every change, so SIGKILL is also safe (the CI chaos job relies on it).
+- HTTP server: 5 s read header, 60 s read/write (room for InstallSnapshot), 120 s idle. Peer dials time out after 2 s; each RPC is bounded by the election timeout.
+- Container: distroless, non-root, read-only root filesystem, all capabilities dropped in the compose file.
+
+See [SECURITY.md](SECURITY.md) for the threat model.
 
 ## Layout
 
@@ -258,15 +272,15 @@ scripts/chaos.sh      docker-compose fault injection (used by CI)
 
 ```bash
 make race    # all tests with the race detector
-make bench   # BenchmarkPropose3Nodes (in-memory, ~0.25 ms/commit on 8 vCPU)
+make bench   # BenchmarkPropose3Nodes (in-memory, 0.22 ms/commit on 8 vCPU, Go 1.27)
 make lint
 ```
 
 ## References
 
-- D. Ongaro, J. Ousterhout — *In Search of an Understandable Consensus Algorithm* (2014)
-- D. Ongaro — *Consensus: Bridging Theory and Practice* (PhD thesis, 2014): Pre-Vote §9.6, ReadIndex §6.4, client sessions §6.3
-- A. Athalye — *porcupine*, a fast linearizability checker
+- D. Ongaro, J. Ousterhout, *In Search of an Understandable Consensus Algorithm* (2014)
+- D. Ongaro, *Consensus: Bridging Theory and Practice* (PhD thesis, 2014): Pre-Vote §9.6, ReadIndex §6.4, client sessions §6.3
+- A. Athalye, *porcupine*, a fast linearizability checker
 
 ## Container image
 
@@ -278,4 +292,4 @@ docker pull ghcr.io/hoffman-alternative/raft-kv:latest
 
 ## License
 
-[MIT](LICENSE) © 2026 Herman Hoffman
+[MIT](LICENSE)

@@ -14,4 +14,5 @@ COPY --from=build --chown=65532:65532 /out/data /data
 USER nonroot:nonroot
 EXPOSE 7001
 VOLUME ["/data"]
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 CMD ["/usr/local/bin/raftkv", "healthcheck"]
 ENTRYPOINT ["/usr/local/bin/raftkv", "-data", "/data"]

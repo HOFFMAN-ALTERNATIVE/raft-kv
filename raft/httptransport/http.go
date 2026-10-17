@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"time"
 
@@ -36,6 +37,9 @@ func New(peers map[string]string) *Transport {
 	return &Transport{
 		peers: peers,
 		client: &http.Client{Transport: &http.Transport{
+			// Per-RPC deadlines come from the caller's context; the dial
+			// timeout stops a dead peer from holding a replicator on connect.
+			DialContext:         (&net.Dialer{Timeout: 2 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 			MaxIdleConnsPerHost: 4,
 			IdleConnTimeout:     90 * time.Second,
 		}},

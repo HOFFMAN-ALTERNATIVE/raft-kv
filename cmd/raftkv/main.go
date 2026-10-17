@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -29,6 +30,15 @@ import (
 var version = "dev"
 
 func main() {
+	// `raftkv healthcheck` probes the local node so the distroless image
+	// (no shell, no curl) can still run a Docker HEALTHCHECK.
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		if err := healthcheck(envOr("RAFTKV_LISTEN", ":7001")); err != nil {
+			fmt.Fprintln(os.Stderr, "unhealthy:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "raftkv:", err)
 		os.Exit(1)
@@ -96,7 +106,17 @@ func run() error {
 	mux := http.NewServeMux()
 	httptransport.Register(mux, node)
 	kv.NewServer(&kv.Store{Node: node, FSM: fsm}, clientURLs).Register(mux)
-	srv := &http.Server{Addr: *listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	// Linearizable reads and writes wait for a commit; kv.Server bounds that
+	// with its own per-request context, so these are outer safety limits.
+	// ReadTimeout leaves room for a large InstallSnapshot body.
+	srv := &http.Server{
+		Addr:              *listen,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -116,6 +136,24 @@ func run() error {
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
 	node.Stop()
+	return nil
+}
+
+// healthcheck asks the local node's /healthz over loopback.
+func healthcheck(listen string) error {
+	_, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://127.0.0.1:" + port + "/healthz")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("status %d", resp.StatusCode)
+	}
 	return nil
 }
 
